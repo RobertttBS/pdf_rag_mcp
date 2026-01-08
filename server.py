@@ -69,6 +69,20 @@ def save_db(db):
 # 支援的檔案格式
 SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.pptx', '.xlsx', '.xls'}
 
+# 批次處理設定 - 每處理 N 個檔案就寫入一次 FAISS，降低記憶體使用並增加可靠性
+BATCH_SIZE = 10
+
+def get_indexed_sources(db) -> set:
+    """
+    取得已索引的檔案名稱集合，用於重複檢測。
+    
+    Returns:
+        set: 已索引的檔案名稱（source）集合
+    """
+    if not db or not hasattr(db, 'docstore') or not hasattr(db.docstore, '_dict'):
+        return set()
+    return {doc.metadata.get('source') for doc in db.docstore._dict.values() if doc.metadata.get('source')}
+
 def get_file_extension(file_path: str) -> str:
     """取得檔案副檔名（小寫）"""
     return os.path.splitext(file_path)[1].lower()
@@ -162,6 +176,12 @@ def add_folder_to_library(folder_path: str):
     """[批次處理] 讀取資料夾內所有支援的文件並加入知識庫
     
     支援格式：PDF, DOCX, PPTX, XLSX, XLS
+    
+    優化功能：
+    - 分批寫入 FAISS（每 N 個檔案寫入一次，降低記憶體使用）
+    - 自動跳過已索引的檔案（重複檢測）
+    - 進度回報（在 stderr 輸出處理進度）
+    - 斷點續傳友善（分批寫入，中途失敗也保留部分成果）
     """
     # Import moved locally
     import glob
@@ -180,61 +200,115 @@ def add_folder_to_library(folder_path: str):
         # 也搜尋大寫副檔名
         all_files.extend(glob.glob(os.path.join(folder_path, f"*{ext.upper()}")))
     
-    # 去重複
-    all_files = list(set(all_files))
+    # 去重複並排序（確保處理順序一致）
+    all_files = sorted(set(all_files))
     
     if not all_files:
         supported_list = ", ".join(SUPPORTED_EXTENSIONS)
         return f"在 '{folder_path}' 中找不到任何支援的檔案。\n支援格式: {supported_list}"
 
-    all_splits = []
+    # 取得已索引的檔案，用於重複檢測
+    current_db = get_db()
+    indexed_sources = get_indexed_sources(current_db)
+    
+    # 過濾掉已索引的檔案
+    files_to_process = []
+    skipped_files = []
+    for file_path in all_files:
+        file_name = os.path.basename(file_path)
+        if file_name in indexed_sources:
+            skipped_files.append(file_name)
+        else:
+            files_to_process.append(file_path)
+    
+    if not files_to_process:
+        if skipped_files:
+            return f"📋 資料夾中的 {len(skipped_files)} 個檔案都已在知識庫中，無需重複索引。"
+        return "沒有找到需要處理的檔案。"
+
+    # 進度回報
+    total_files = len(files_to_process)
+    print(f"[開始處理] 共 {total_files} 個新檔案待處理，已跳過 {len(skipped_files)} 個重複檔案", file=sys.stderr)
+    
     processed_files = []
     failed_files = []
+    total_splits_count = 0
+    batch_count = 0
     
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
+    embedding_func = get_embedding_function()
+    
+    batch_splits = []  # 當前批次的片段
 
-    # 1. 讀取並切分
-    for file_path in all_files:
+    for idx, file_path in enumerate(files_to_process, 1):
+        file_name = os.path.basename(file_path)
+        
+        # 進度回報
+        print(f"[{idx}/{total_files}] 處理中: {file_name}", file=sys.stderr)
+        
         try:
             docs = load_document(file_path)
             if docs:
                 splits = text_splitter.split_documents(docs)
                 if splits:
                     for split in splits:
-                        split.metadata["source"] = os.path.basename(file_path)
-                    all_splits.extend(splits)
-                    processed_files.append(os.path.basename(file_path))
+                        split.metadata["source"] = file_name
+                    batch_splits.extend(splits)
+                    processed_files.append(file_name)
+                else:
+                    failed_files.append((file_name, "文件內容為空"))
+            else:
+                failed_files.append((file_name, "無法讀取內容"))
         except Exception as e:
-            failed_files.append(os.path.basename(file_path))
-            print(f"Error reading {file_path}: {e}", file=sys.stderr)
+            failed_files.append((file_name, str(e)))
+            print(f"[錯誤] {file_name}: {e}", file=sys.stderr)
+        
+        # 分批寫入 FAISS - 每 BATCH_SIZE 個檔案或最後一個檔案時寫入
+        if len(processed_files) > 0 and (len(processed_files) % BATCH_SIZE == 0 or idx == total_files):
+            if batch_splits:
+                try:
+                    batch_count += 1
+                    print(f"[寫入批次 {batch_count}] 正在寫入 {len(batch_splits)} 個片段到 FAISS...", file=sys.stderr)
+                    
+                    # 重新取得最新的 DB（可能在上一批次已更新）
+                    current_db = get_db()
+                    
+                    if current_db:
+                        current_db.add_documents(batch_splits)
+                        save_db(current_db)
+                    else:
+                        new_db = FAISS.from_documents(batch_splits, embedding_func)
+                        save_db(new_db)
+                    
+                    total_splits_count += len(batch_splits)
+                    batch_splits = []  # 清空批次，準備下一批
+                    print(f"[寫入批次 {batch_count}] 完成！累計已寫入 {total_splits_count} 個片段", file=sys.stderr)
+                    
+                except Exception as e:
+                    error_msg = f"寫入批次 {batch_count} 時發生錯誤: {str(e)}"
+                    print(f"[嚴重錯誤] {error_msg}", file=sys.stderr)
+                    # 記錄這批檔案為失敗（但保留之前批次的成果）
+                    return f"⚠️ 部分處理完成，但在批次 {batch_count} 時發生錯誤。\n" \
+                           f"📁 已成功處理: {len(processed_files) - len(batch_splits)} 個檔案\n" \
+                           f"📄 已寫入: {total_splits_count} 個片段\n" \
+                           f"❌ 錯誤: {error_msg}"
 
-    if not all_splits:
-        return "沒有成功讀取到任何內容。"
-
-    # 2. 寫入 FAISS
-    try:
-        current_db = get_db()
-        embedding_func = get_embedding_function()
-        
-        if current_db:
-            current_db.add_documents(all_splits)
-            save_db(current_db)
-        else:
-            new_db = FAISS.from_documents(all_splits, embedding_func)
-            save_db(new_db)
-        
-        result = f"✅ 批次處理完成！\n"
-        result += f"📁 共處理 {len(processed_files)} 個檔案\n"
-        result += f"📄 新增 {len(all_splits)} 個片段\n"
-        
-        if failed_files:
-            result += f"\n⚠️ 以下檔案處理失敗:\n"
-            for f in failed_files:
-                result += f"  - {f}\n"
-        
-        return result
-    except Exception as e:
-        return f"寫入資料庫時發生錯誤: {str(e)}"
+    # 組合最終結果
+    result = f"✅ 批次處理完成！\n"
+    result += f"{'='*40}\n"
+    result += f"📁 共處理 {len(processed_files)} 個檔案\n"
+    result += f"📄 新增 {total_splits_count} 個片段\n"
+    result += f"📦 分 {batch_count} 個批次寫入\n"
+    
+    if skipped_files:
+        result += f"\n⏭️ 已跳過 {len(skipped_files)} 個重複檔案（已存在於知識庫）\n"
+    
+    if failed_files:
+        result += f"\n⚠️ 以下 {len(failed_files)} 個檔案處理失敗:\n"
+        for file_name, reason in failed_files:
+            result += f"  - {file_name}: {reason}\n"
+    
+    return result
 
 @mcp.tool()
 def add_pdf_to_library(pdf_path: str):
