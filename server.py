@@ -66,16 +66,100 @@ def save_db(db):
     """將索引存回硬碟"""
     db.save_local(DB_DIR)
 
+# 支援的檔案格式
+SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.pptx', '.xlsx', '.xls'}
+
+def get_file_extension(file_path: str) -> str:
+    """取得檔案副檔名（小寫）"""
+    return os.path.splitext(file_path)[1].lower()
+
+def load_document(file_path: str):
+    """
+    通用文件載入器：根據檔案類型自動選擇適合的 loader
+    
+    支援格式：
+    - PDF (.pdf)
+    - Word (.docx)
+    - PowerPoint (.pptx)
+    - Excel (.xlsx, .xls)
+    
+    Returns:
+        list: Document 物件列表
+    """
+    from langchain_core.documents import Document
+    
+    ext = get_file_extension(file_path)
+    file_name = os.path.basename(file_path)
+    
+    try:
+        if ext == '.pdf':
+            from langchain_community.document_loaders import PyPDFLoader
+            loader = PyPDFLoader(file_path)
+            return loader.load()
+        
+        elif ext == '.docx':
+            import docx2txt
+            text = docx2txt.process(file_path)
+            if text.strip():
+                return [Document(
+                    page_content=text,
+                    metadata={"source": file_name, "file_type": "docx"}
+                )]
+            return []
+        
+        elif ext == '.pptx':
+            from pptx import Presentation
+            prs = Presentation(file_path)
+            documents = []
+            for slide_num, slide in enumerate(prs.slides, 1):
+                slide_text = []
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_text.append(shape.text)
+                if slide_text:
+                    documents.append(Document(
+                        page_content="\n".join(slide_text),
+                        metadata={"source": file_name, "page": slide_num, "file_type": "pptx"}
+                    ))
+            return documents
+        
+        elif ext in ['.xlsx', '.xls']:
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+            documents = []
+            for sheet_name in wb.sheetnames:
+                sheet = wb[sheet_name]
+                rows_text = []
+                for row in sheet.iter_rows(max_row=1000):  # 限制最大行數避免記憶體問題
+                    row_values = [str(cell.value) if cell.value is not None else "" for cell in row]
+                    if any(v.strip() for v in row_values):
+                        rows_text.append(" | ".join(row_values))
+                if rows_text:
+                    documents.append(Document(
+                        page_content="\n".join(rows_text),
+                        metadata={"source": file_name, "sheet": sheet_name, "file_type": "excel"}
+                    ))
+            return documents
+        
+        else:
+            return []
+    
+    except Exception as e:
+        print(f"載入文件 {file_path} 時發生錯誤: {e}", file=sys.stderr)
+        return []
+
 # ---------------------------------------------------------
 # 修改點 3: 將工具所需的 Import 移至函式內部
 # ---------------------------------------------------------
 
 @mcp.tool()
 def add_folder_to_library(folder_path: str):
-    """[批次處理] 讀取資料夾內 PDF 並加入知識庫"""
+    """[批次處理] 讀取資料夾內所有支援的文件並加入知識庫
+    
+    支援格式：PDF, DOCX, PPTX, XLSX, XLS
+    """
     # Import moved locally
     import glob
-    from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.vectorstores import FAISS
 
@@ -84,28 +168,40 @@ def add_folder_to_library(folder_path: str):
     if not os.path.exists(folder_path):
         return f"錯誤：找不到資料夾 -> {folder_path}"
 
-    pdf_files = glob.glob(os.path.join(folder_path, "*.pdf"))
-    if not pdf_files:
-        return f"在 '{folder_path}' 中找不到任何 PDF 檔案。"
+    # 搜尋所有支援的檔案格式
+    all_files = []
+    for ext in SUPPORTED_EXTENSIONS:
+        all_files.extend(glob.glob(os.path.join(folder_path, f"*{ext}")))
+        # 也搜尋大寫副檔名
+        all_files.extend(glob.glob(os.path.join(folder_path, f"*{ext.upper()}")))
+    
+    # 去重複
+    all_files = list(set(all_files))
+    
+    if not all_files:
+        supported_list = ", ".join(SUPPORTED_EXTENSIONS)
+        return f"在 '{folder_path}' 中找不到任何支援的檔案。\n支援格式: {supported_list}"
 
     all_splits = []
     processed_files = []
+    failed_files = []
     
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
 
     # 1. 讀取並切分
-    for pdf_file in pdf_files:
+    for file_path in all_files:
         try:
-            loader = PyPDFLoader(pdf_file)
-            docs = loader.load()
-            splits = text_splitter.split_documents(docs)
-            if splits:
-                for split in splits:
-                    split.metadata["source"] = os.path.basename(pdf_file)
-                all_splits.extend(splits)
-                processed_files.append(os.path.basename(pdf_file))
+            docs = load_document(file_path)
+            if docs:
+                splits = text_splitter.split_documents(docs)
+                if splits:
+                    for split in splits:
+                        split.metadata["source"] = os.path.basename(file_path)
+                    all_splits.extend(splits)
+                    processed_files.append(os.path.basename(file_path))
         except Exception as e:
-            print(f"Error reading {pdf_file}: {e}", file=sys.stderr)
+            failed_files.append(os.path.basename(file_path))
+            print(f"Error reading {file_path}: {e}", file=sys.stderr)
 
     if not all_splits:
         return "沒有成功讀取到任何內容。"
@@ -113,42 +209,69 @@ def add_folder_to_library(folder_path: str):
     # 2. 寫入 FAISS
     try:
         current_db = get_db()
-        embedding_func = get_embedding_function() # 確保取得模型
+        embedding_func = get_embedding_function()
         
         if current_db:
             current_db.add_documents(all_splits)
             save_db(current_db)
         else:
-            # 需要用到 FAISS class，所以上面有 import
             new_db = FAISS.from_documents(all_splits, embedding_func)
             save_db(new_db)
         
-        return f"批次處理完成！共處理 {len(processed_files)} 個檔案，新增 {len(all_splits)} 個片段。"
+        result = f"✅ 批次處理完成！\n"
+        result += f"📁 共處理 {len(processed_files)} 個檔案\n"
+        result += f"📄 新增 {len(all_splits)} 個片段\n"
+        
+        if failed_files:
+            result += f"\n⚠️ 以下檔案處理失敗:\n"
+            for f in failed_files:
+                result += f"  - {f}\n"
+        
+        return result
     except Exception as e:
         return f"寫入資料庫時發生錯誤: {str(e)}"
 
 @mcp.tool()
 def add_pdf_to_library(pdf_path: str):
-    """[單檔處理] 將 PDF 加入知識庫"""
+    """[單檔處理] 將 PDF 加入知識庫（向下相容，建議使用 add_document_to_library）"""
+    return add_document_to_library(pdf_path)
+
+@mcp.tool()
+def add_document_to_library(file_path: str):
+    """[單檔處理] 將文件加入知識庫
+    
+    支援格式：PDF, DOCX, PPTX, XLSX, XLS
+    """
     # Import moved locally
-    from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.vectorstores import FAISS
 
-    pdf_path = pdf_path.strip('"').strip("'")
+    file_path = file_path.strip('"').strip("'")
     
-    if not os.path.exists(pdf_path):
-        return f"錯誤：找不到檔案 -> {pdf_path}"
+    if not os.path.exists(file_path):
+        return f"錯誤：找不到檔案 -> {file_path}"
+    
+    # 檢查檔案格式
+    ext = get_file_extension(file_path)
+    if ext not in SUPPORTED_EXTENSIONS:
+        supported_list = ", ".join(SUPPORTED_EXTENSIONS)
+        return f"錯誤：不支援的檔案格式 '{ext}'\n支援格式: {supported_list}"
 
     try:
-        loader = PyPDFLoader(pdf_path)
-        docs = loader.load()
+        docs = load_document(file_path)
+        
+        if not docs:
+            return f"文件內容為空或無法讀取: {os.path.basename(file_path)}"
         
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
         splits = text_splitter.split_documents(docs)
         
         if not splits:
-            return "PDF 內容為空或無法讀取。"
+            return "文件內容為空或無法讀取。"
+
+        # 確保 source metadata 正確
+        for split in splits:
+            split.metadata["source"] = os.path.basename(file_path)
 
         # 寫入 FAISS
         current_db = get_db()
@@ -161,10 +284,19 @@ def add_pdf_to_library(pdf_path: str):
             new_db = FAISS.from_documents(splits, embedding_func)
             save_db(new_db)
         
-        return f"成功！已將 '{os.path.basename(pdf_path)}' 的 {len(splits)} 個片段加入知識庫。"
+        file_type_emoji = {
+            '.pdf': '📕',
+            '.docx': '📘',
+            '.pptx': '📙',
+            '.xlsx': '📗',
+            '.xls': '📗'
+        }
+        emoji = file_type_emoji.get(ext, '📄')
+        
+        return f"✅ 成功！{emoji} 已將 '{os.path.basename(file_path)}' 的 {len(splits)} 個片段加入知識庫。"
     
     except Exception as e:
-        return f"處理 PDF 時發生錯誤: {str(e)}"
+        return f"處理文件時發生錯誤: {str(e)}"
 
 @mcp.tool()
 def list_indexed_files():
