@@ -93,6 +93,11 @@ def load_document(file_path: str):
     
     try:
         if ext == '.pdf':
+            try:
+                import pypdf
+            except ImportError:
+                print("錯誤：缺少 pypdf 模組，請執行 pip install pypdf", file=sys.stderr)
+                return []
             from langchain_community.document_loaders import PyPDFLoader
             loader = PyPDFLoader(file_path)
             return loader.load()
