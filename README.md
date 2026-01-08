@@ -1,3 +1,5 @@
+
+
 # 📚 Local Library MCP - 本地知識庫搜尋工具
 
 這是一個 **Cursor MCP (Model Context Protocol)** 伺服器，可以讓 Cursor AI 助手直接搜尋你的本地文件知識庫。
@@ -18,8 +20,8 @@ C:\Tools\PDF_RAG_TOOL\
 
 ### 步驟 2：設定 Cursor MCP
 
-1. 開啟 Cursor，前往 **Settings** → **MCP**
-2. 點擊 **Add new global MCP server**
+1. 開啟 Cursor，前往 **Settings** → **MCP** (預設畫面右上角的齒輪 -> Cursor Settings -> Tools & MCP)
+2. 點擊 **New MCP Server**
 3. 填入以下設定：
 
 **名稱**：`Local-Library`（或你喜歡的名稱）
@@ -29,8 +31,8 @@ C:\Tools\PDF_RAG_TOOL\
 {
   "mcpServers": {
     "Local-Library": {
-      "command": "cmd",
-      "args": ["/c", "C:\\你的解壓縮路徑\\PDF_RAG_TOOL\\start_mcp.bat"]
+      "command": "C:\\你的解壓縮路徑\\PDF_RAG_TOOL\\start_mcp.bat",
+      "args": []
     }
   }
 }
@@ -38,13 +40,13 @@ C:\Tools\PDF_RAG_TOOL\
 
 > ⚠️ **注意**：請將 `C:\\你的解壓縮路徑\\` 替換成你實際的解壓縮位置，路徑中的 `\` 需要寫成 `\\`
 
-**完整範例**：
+**完整的 mcp.json 範例**：
 ```json
 {
   "mcpServers": {
     "Local-Library": {
-      "command": "cmd",
-      "args": ["/c", "C:\\CursorMCP\\PDF_RAG_TOOL\\start_mcp.bat"]
+      "command": "C:\\Tools\\PDF_RAG_TOOL\\start_mcp.bat",
+      "args": []
     }
   }
 }
@@ -136,6 +138,8 @@ C:\Tools\PDF_RAG_TOOL\
 
 ## 📂 資料夾結構說明
 
+> Note: Documents 只是預設文件，未來使用不需要把檔案複製過來，只要直接給 cursor agent 絕對路徑即可
+
 ```
 PDF_RAG_TOOL\
 ├── 📄 server.py          # MCP 伺服器主程式
@@ -179,21 +183,7 @@ PDF_RAG_TOOL\
 ### Q: 已索引的文件更新後需要重新加入嗎？
 **A**: 是的。目前系統會根據檔名檢測重複，如果檔案內容更新但檔名相同，需要先刪除 `faiss_index` 資料夾後重新加入。
 
----
 
-## 📝 技術細節
+### Q: MCP Tools 顯示 load error 或是持續 loading tool 怎麼辦?
+**A:** 先 disable 再 enable 應該能解決問題。
 
-- **向量資料庫**：FAISS (Facebook AI Similarity Search)
-- **Embedding 模型**：all-MiniLM-L6-v2
-- **MCP 框架**：FastMCP
-- **分塊策略**：RecursiveCharacterTextSplitter (chunk_size=600, overlap=100)
-
----
-
-## 📬 聯絡資訊
-
-如有問題或建議，歡迎回報！
-
----
-
-*最後更新：2026-01-08*
