@@ -67,7 +67,31 @@ def save_db(db):
     db.save_local(DB_DIR)
 
 # 支援的檔案格式
-SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.pptx', '.xlsx', '.xls'}
+SUPPORTED_EXTENSIONS = {
+    # 文件類
+    '.pdf', '.docx', '.pptx', '.xlsx', '.xls',
+    # Markdown
+    '.md', '.markdown',
+    # 純文字
+    '.txt', '.log',
+    # 腳本
+    '.bat', '.sh', '.ps1',
+    # 設定檔
+    '.json', '.yaml', '.yml', '.ini', '.cfg', '.conf',
+    # 資料檔
+    '.csv',
+    # 程式碼
+    '.py', '.js', '.ts', '.html', '.css', '.xml'
+}
+
+# 純文字類型副檔名（用於統一處理）
+TEXT_EXTENSIONS = {
+    '.txt', '.log',
+    '.bat', '.sh', '.ps1',
+    '.json', '.yaml', '.yml', '.ini', '.cfg', '.conf',
+    '.csv',
+    '.py', '.js', '.ts', '.html', '.css', '.xml'
+}
 
 # 批次處理設定 - 每處理 N 個檔案就寫入一次 FAISS，降低記憶體使用並增加可靠性
 BATCH_SIZE = 10
@@ -96,6 +120,12 @@ def load_document(file_path: str):
     - Word (.docx)
     - PowerPoint (.pptx)
     - Excel (.xlsx, .xls)
+    - Markdown (.md, .markdown)
+    - 純文字 (.txt, .log)
+    - 腳本 (.bat, .sh, .ps1)
+    - 設定檔 (.json, .yaml, .yml, .ini, .cfg, .conf)
+    - 資料檔 (.csv)
+    - 程式碼 (.py, .js, .ts, .html, .css, .xml)
     
     Returns:
         list: Document 物件列表
@@ -160,6 +190,58 @@ def load_document(file_path: str):
                     ))
             return documents
         
+        elif ext in ['.md', '.markdown']:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+            if text.strip():
+                return [Document(
+                    page_content=text,
+                    metadata={"source": file_name, "file_type": "markdown"}
+                )]
+            return []
+        
+        elif ext in TEXT_EXTENSIONS:
+            # 使用 chardet 自動偵測編碼
+            import chardet
+            
+            try:
+                with open(file_path, 'rb') as f:
+                    raw_data = f.read()
+                
+                # 偵測編碼
+                detected = chardet.detect(raw_data)
+                encoding = detected.get('encoding', 'utf-8') or 'utf-8'
+                confidence = detected.get('confidence', 0)
+                
+                # 解碼文字
+                text = raw_data.decode(encoding, errors='ignore')
+                
+                if text.strip():
+                    # 根據副檔名決定 file_type
+                    file_type_map = {
+                        '.txt': 'text', '.log': 'log',
+                        '.bat': 'script', '.sh': 'script', '.ps1': 'script',
+                        '.json': 'config', '.yaml': 'config', '.yml': 'config',
+                        '.ini': 'config', '.cfg': 'config', '.conf': 'config',
+                        '.csv': 'data',
+                        '.py': 'code', '.js': 'code', '.ts': 'code',
+                        '.html': 'code', '.css': 'code', '.xml': 'code'
+                    }
+                    file_type = file_type_map.get(ext, 'text')
+                    
+                    return [Document(
+                        page_content=text,
+                        metadata={
+                            "source": file_name,
+                            "file_type": file_type,
+                            "encoding": encoding,
+                            "encoding_confidence": round(confidence, 2)
+                        }
+                    )]
+            except Exception as e:
+                print(f"讀取純文字檔案 {file_path} 時發生錯誤: {e}", file=sys.stderr)
+            return []
+        
         else:
             return []
     
@@ -175,7 +257,7 @@ def load_document(file_path: str):
 def add_folder_to_library(folder_path: str):
     """[批次處理] 讀取資料夾內所有支援的文件並加入知識庫
     
-    支援格式：PDF, DOCX, PPTX, XLSX, XLS
+    支援格式：PDF, DOCX, PPTX, XLSX, XLS, MD, TXT, LOG, BAT, SH, PS1, JSON, YAML, YML, INI, CFG, CONF, CSV, PY, JS, TS, HTML, CSS, XML
     
     優化功能：
     - 分批寫入 FAISS（每 N 個檔案寫入一次，降低記憶體使用）
@@ -319,7 +401,7 @@ def add_pdf_to_library(pdf_path: str):
 def add_document_to_library(file_path: str):
     """[單檔處理] 將文件加入知識庫
     
-    支援格式：PDF, DOCX, PPTX, XLSX, XLS
+    支援格式：PDF, DOCX, PPTX, XLSX, XLS, MD, TXT, LOG, BAT, SH, PS1, JSON, YAML, YML, INI, CFG, CONF, CSV, PY, JS, TS, HTML, CSS, XML
     """
     # Import moved locally
     from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -368,7 +450,32 @@ def add_document_to_library(file_path: str):
             '.docx': '📘',
             '.pptx': '📙',
             '.xlsx': '📗',
-            '.xls': '📗'
+            '.xls': '📗',
+            '.md': '📝',
+            '.markdown': '📝',
+            # 純文字
+            '.txt': '📄',
+            '.log': '📋',
+            # 腳本
+            '.bat': '⚙️',
+            '.sh': '⚙️',
+            '.ps1': '⚙️',
+            # 設定檔
+            '.json': '🔧',
+            '.yaml': '🔧',
+            '.yml': '🔧',
+            '.ini': '🔧',
+            '.cfg': '🔧',
+            '.conf': '🔧',
+            # 資料檔
+            '.csv': '📊',
+            # 程式碼
+            '.py': '🐍',
+            '.js': '💻',
+            '.ts': '💻',
+            '.html': '🌐',
+            '.css': '🎨',
+            '.xml': '📰'
         }
         emoji = file_type_emoji.get(ext, '📄')
         
