@@ -1,3 +1,4 @@
 python_env/
 faiss_index/
 models/
+.DS_Store
