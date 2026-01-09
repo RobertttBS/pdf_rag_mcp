@@ -56,19 +56,43 @@ def get_embedding_function():
         print("[OK] Model loaded successfully", file=sys.stderr)
     return _embedding_function
 
+# ---------------------------------------------------------
+# Singleton pattern for FAISS Database
+# ---------------------------------------------------------
+_db_cache = None
+
 def get_db():
-    """Get DB instance with lazy FAISS loading"""
+    """
+    Get DB instance with Singleton pattern.
+    Loads from disk only once, then returns memory instance.
+    """
+    global _db_cache
+    
+    # 如果記憶體中已經有 DB，直接回傳 (速度極快)
+    if _db_cache is not None:
+        return _db_cache
+
+    # 第一次載入：匯入套件並從磁碟讀取
     from langchain_community.vectorstores import FAISS
     
     embedding_func = get_embedding_function()
     
     if os.path.exists(DB_DIR) and os.path.exists(os.path.join(DB_DIR, "index.faiss")):
-        return FAISS.load_local(DB_DIR, embedding_func, allow_dangerous_deserialization=True)
+        print("[INFO] Loading FAISS index from disk...", file=sys.stderr)
+        _db_cache = FAISS.load_local(DB_DIR, embedding_func, allow_dangerous_deserialization=True)
+        return _db_cache
+        
     return None
 
 def save_db(db):
-    """Save index to disk"""
+    """Save index to disk and update global cache"""
+    global _db_cache
+    
+    # 寫入磁碟
     db.save_local(DB_DIR)
+    
+    # 更新全域快取，確保下一次讀取是拿最新的
+    _db_cache = db
 
 # Supported file extensions
 SUPPORTED_EXTENSIONS = {
@@ -502,11 +526,19 @@ if __name__ == "__main__":
     log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_error.log")
     
     try:
-        # --- [新增] 預熱步驟 ---
-        print("[System] Checking AI Models...", file=sys.stderr)
-        # 強制執行一次 get_embedding_function，確保模型已下載並載入
+        # --- [優化] 完整預熱步驟 ---
+        print("[System] Initializing MCP Server...", file=sys.stderr)
+        
+        # 1. 預熱 Embedding 模型 (下載/載入權重)
+        print("[System] 1/2 Loading Embedding Model...", file=sys.stderr)
         get_embedding_function() 
-        print("[System] Models ready. Starting MCP Server...", file=sys.stderr)
+        
+        # 2. 預熱 FAISS 資料庫 (匯入套件 + 讀取 Index 到記憶體)
+        # 這樣做完後，第一個 request 就會直接從記憶體拿資料，秒回
+        print("[System] 2/2 Pre-loading Database...", file=sys.stderr)
+        get_db()
+        
+        print("[System] All systems ready. Starting Server...", file=sys.stderr)
         # ---------------------
 
         mcp.run()
