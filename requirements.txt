@@ -20,4 +20,5 @@ openpyxl>=3.1.5        # Excel (.xlsx, .xls) processing
 chardet>=5.2.0         # Auto-detect text file encoding
 
 # ML/Embeddings (will auto-install PyTorch)
+# Using BAAI/bge-small-zh-v1.5 for Chinese text embedding (512 dimensions)
 sentence-transformers>=5.2.0
