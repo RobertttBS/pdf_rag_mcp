@@ -1,1 +1,3 @@
 python_env/
+faiss_index/
+models/

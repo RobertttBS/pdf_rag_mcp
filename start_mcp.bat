@@ -1,8 +1,6 @@
 @echo off
-:: 切換到這個 bat 檔所在的目錄 (確保路徑正確)
+:: Switch to the directory where this bat file is located
 cd /d "%~dp0"
 
-:: 呼叫 資料夾裡的 python 來執行 同一層的 execute.py
+:: Run server.py using the local python environment
 .\python_env\python.exe server.py
-
-pause

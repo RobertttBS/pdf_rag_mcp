@@ -13,11 +13,11 @@ langchain-text-splitters>=1.1.0
 faiss-cpu>=1.13.2
 
 # Document Loaders
-pypdf>=6.5.0           # PDF 解析（必要！缺少會導致 PDF 讀取失敗）
-docx2txt>=0.9          # Word (.docx) 文件處理
-python-pptx>=1.0.2     # PowerPoint (.pptx) 處理
-openpyxl>=3.1.5        # Excel (.xlsx, .xls) 處理
-chardet>=5.2.0         # 純文字檔案編碼自動偵測
+pypdf>=6.5.0           # PDF parsing (required for PDF loading)
+docx2txt>=0.9          # Word (.docx) document processing
+python-pptx>=1.0.2     # PowerPoint (.pptx) processing
+openpyxl>=3.1.5        # Excel (.xlsx, .xls) processing
+chardet>=5.2.0         # Auto-detect text file encoding
 
-# ML/Embeddings (會自動安裝 PyTorch)
+# ML/Embeddings (will auto-install PyTorch)
 sentence-transformers>=5.2.0
