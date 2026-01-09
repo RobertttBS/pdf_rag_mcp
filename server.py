@@ -377,13 +377,6 @@ def add_folder_to_library(folder_path: str):
     
     return result
 
-
-@mcp.tool()
-def add_pdf_to_library(pdf_path: str):
-    """[Single file] Add PDF to knowledge base (legacy, use add_document_to_library)"""
-    return add_document_to_library(pdf_path)
-
-
 @mcp.tool()
 def add_document_to_library(file_path: str):
     """[Single file] Add document to knowledge base
@@ -502,11 +495,22 @@ def query_library(query: str):
     except Exception as e:
         return f"Error during search: {str(e)}"
 
-
 if __name__ == "__main__":
+    import sys
+    
+    # 建立 log 檔案路徑
     log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_error.log")
+    
     try:
+        # --- [新增] 預熱步驟 ---
+        print("[System] Checking AI Models...", file=sys.stderr)
+        # 強制執行一次 get_embedding_function，確保模型已下載並載入
+        get_embedding_function() 
+        print("[System] Models ready. Starting MCP Server...", file=sys.stderr)
+        # ---------------------
+
         mcp.run()
+
     except Exception:
         with open(log_file, "w", encoding="utf-8") as f:
             f.write(traceback.format_exc())
