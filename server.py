@@ -52,7 +52,10 @@ def get_embedding_function():
         from langchain_huggingface import HuggingFaceEmbeddings
         
         print("[INFO] Loading AI model (first run may be slow)...", file=sys.stderr)
-        _embedding_function = HuggingFaceEmbeddings(model_name="BAAI/bge-small-zh-v1.5")
+        _embedding_function = HuggingFaceEmbeddings(
+            model_name="nomic-ai/nomic-embed-text-v1.5",
+            model_kwargs={"trust_remote_code": True}
+        )
         print("[OK] Model loaded successfully", file=sys.stderr)
     return _embedding_function
 
