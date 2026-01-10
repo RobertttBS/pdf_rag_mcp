@@ -8,13 +8,13 @@ Endpoints:
 - POST /query      - Search knowledge base
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 import os
 import sys
 import base64
-import tempfile
 import warnings
+import shutil
 
 # ---------------------------------------------------------
 # Set model cache directory to ./models/ (relative to script location)
@@ -35,10 +35,12 @@ def get_base_path():
 BASE_DIR = get_base_path()
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 DB_DIR = os.path.join(BASE_DIR, "faiss_index")
+INDEXED_FILES_DIR = os.path.join(BASE_DIR, "server", "indexed_files") # Files stored in server/indexed_files
 
 # Create directories if not exist
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(DB_DIR, exist_ok=True)
+os.makedirs(INDEXED_FILES_DIR, exist_ok=True)
 
 # Set environment variables for model cache BEFORE importing transformers
 os.environ["HF_HOME"] = MODELS_DIR
@@ -249,6 +251,57 @@ def load_document(file_path: str):
         return []
 
 # ---------------------------------------------------------
+# Background Task
+# ---------------------------------------------------------
+
+def process_and_index_document(file_path: str, original_filename: str):
+    """
+    Background task to process and index a document.
+    """
+    try:
+        print(f"[Background] Starting indexing for {original_filename}...", file=sys.stderr)
+        
+        # Load and process document
+        docs = load_document(file_path)
+        
+        if not docs:
+            print(f"[Background] Error: Empty or unreadable document: {original_filename}", file=sys.stderr)
+            return
+
+        # Split into chunks
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain_community.vectorstores import FAISS
+        
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+        splits = text_splitter.split_documents(docs)
+        
+        if not splits:
+            print(f"[Background] Error: No chunks generated for: {original_filename}", file=sys.stderr)
+            return
+        
+        # Update metadata with original filename
+        for split in splits:
+            split.metadata["source"] = original_filename
+        
+        # Add to FAISS
+        current_db = get_db()
+        embedding_func = get_embedding_function()
+        
+        if current_db:
+            current_db.add_documents(splits)
+            save_db(current_db)
+        else:
+            new_db = FAISS.from_documents(splits, embedding_func)
+            save_db(new_db)
+            
+        print(f"[Background] Successfully indexed {len(splits)} chunks for {original_filename}", file=sys.stderr)
+        
+    except Exception as e:
+        print(f"[Background] Critical Error indexing {original_filename}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+
+# ---------------------------------------------------------
 # FastAPI App
 # ---------------------------------------------------------
 
@@ -312,10 +365,8 @@ def health_check():
     )
 
 @app.post("/documents", response_model=AddDocumentResponse)
-def add_document(request: AddDocumentRequest):
-    """Add a document to the knowledge base."""
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain_community.vectorstores import FAISS
+def add_document(request: AddDocumentRequest, background_tasks: BackgroundTasks):
+    """Add a document to the knowledge base (Async processing)."""
     
     # Validate filename extension
     ext = get_file_extension(request.filename)
@@ -338,50 +389,23 @@ def add_document(request: AddDocumentRequest):
             detail=f"File exceeds {MAX_FILE_SIZE_MB}MB limit (got {len(file_content) / 1024 / 1024:.1f}MB)"
         )
     
-    # Write to temp file for processing
+    # Save file to server/indexed_files with original name
+    save_path = os.path.join(INDEXED_FILES_DIR, request.filename)
     try:
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_file:
-            tmp_file.write(file_content)
-            tmp_path = tmp_file.name
-        
-        # Load and process document
-        docs = load_document(tmp_path)
-        
-        if not docs:
-            raise HTTPException(status_code=400, detail="Empty or unreadable document")
-        
-        # Split into chunks
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
-        splits = text_splitter.split_documents(docs)
-        
-        if not splits:
-            raise HTTPException(status_code=400, detail="Document content is empty or unreadable")
-        
-        # Update metadata with original filename
-        for split in splits:
-            split.metadata["source"] = request.filename
-        
-        # Add to FAISS
-        current_db = get_db()
-        embedding_func = get_embedding_function()
-        
-        if current_db:
-            current_db.add_documents(splits)
-            save_db(current_db)
-        else:
-            new_db = FAISS.from_documents(splits, embedding_func)
-            save_db(new_db)
-        
-        return AddDocumentResponse(
-            status="ok",
-            message=f"Added '{request.filename}' with {len(splits)} chunks to knowledge base.",
-            chunks_added=len(splits)
-        )
+        # If file exists, overwrite? Yes, user might be updating the content.
+        with open(save_path, "wb") as f:
+            f.write(file_content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+
+    # Add background task
+    background_tasks.add_task(process_and_index_document, save_path, request.filename)
     
-    finally:
-        # Cleanup temp file
-        if 'tmp_path' in locals() and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    return AddDocumentResponse(
+        status="processing",
+        message=f"File '{request.filename}' saved and queued for background indexing.",
+        chunks_added=0 # Processing is async, so we don't know yet
+    )
 
 @app.get("/documents", response_model=ListDocumentsResponse)
 def list_documents():
