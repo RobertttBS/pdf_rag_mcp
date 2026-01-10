@@ -1,5 +1,3 @@
-
-
 # 📚 Local Library MCP - 本地知識庫搜尋工具
 
 這是一個 **Cursor MCP (Model Context Protocol)** 伺服器，可以讓 Cursor AI 助手直接搜尋你的本地文件知識庫。
@@ -8,61 +6,107 @@
 
 ---
 
+## 🏗️ 架構說明
+
+本專案採用 **Client-Server 架構**：
+
+```
+┌─────────────────┐         HTTP          ┌─────────────────┐
+│  Cursor + MCP   │ ──────────────────▶  │   RAG Server    │
+│  Client (輕量)   │ ◀──────────────────   │  (FastAPI)      │
+└─────────────────┘                       └─────────────────┘
+                                                  │
+                                                  ▼
+                                          ┌──────────────┐
+                                          │ FAISS Index  │
+                                          │ + AI Model   │
+                                          └──────────────┘
+```
+
+**優點**：
+
+- 🖥️ Server 可部署在高效能機器上 (AI Embedding 需要較強 CPU)
+- 👥 多個 Client 可共享同一個知識庫
+- 🚀 Client 端輕量，不需下載 AI 模型
+
+---
+
 ## 🚀 快速開始
 
-### 步驟 1：解壓縮
+### 步驟 1：啟動 Server (在高效能機器上)
 
-將整個壓縮檔解壓縮到任意位置，例如：
+```bash
+# 進入專案目錄
+cd /path/to/pdf_rag_mcp
+
+# 安裝依賴
+pip install -r server/requirements.txt
+
+# 啟動 Server
+./server/start_server.sh
+# 或
+python -m uvicorn server.rag_server:app --host 0.0.0.0 --port 8000
+```
+
+Server 啟動後會顯示：
 
 ```
-C:\Tools\PDF_RAG_TOOL\
+[System] Initializing RAG Server...
+[System] 1/2 Loading Embedding Model...
+[OK] Model loaded successfully
+[System] 2/2 Pre-loading Database...
+[System] All systems ready.
 ```
 
-### 步驟 2：設定 Cursor MCP
+> 💡 **API 文件**：啟動後訪問 `http://your-server:8000/docs` 可查看 Swagger UI
 
-1. 開啟 Cursor，前往 **Settings** → **MCP** (預設畫面右上角的齒輪 -> Cursor Settings -> Tools & MCP)
+---
+
+### 步驟 2：設定 Client (在你的電腦上)
+
+1. 修改 `client/start_mcp.bat`，設定 Server 位址：
+
+```batch
+set RAG_SERVER_HOST=192.168.1.100   ← 改成你的 Server IP
+set RAG_SERVER_PORT=8000
+```
+
+2. 安裝 Client 依賴：
+
+```bash
+pip install -r client/requirements.txt
+```
+
+---
+
+### 步驟 3：設定 Cursor MCP
+
+1. 開啟 Cursor，前往 **Settings** → **MCP**
 2. 點擊 **New MCP Server**
 3. 填入以下設定：
 
-**名稱**：`Local-Library`（或你喜歡的名稱）
+**名稱**：`Local-Library`
 
 **設定 JSON**：
+
 ```json
 {
   "mcpServers": {
     "Local-Library": {
-      "command": "C:\\你的解壓縮路徑\\PDF_RAG_TOOL\\start_mcp.bat",
+      "command": "C:\\你的路徑\\pdf_rag_mcp\\client\\start_mcp.bat",
       "args": []
     }
   }
 }
 ```
 
-> ⚠️ **注意**：請將 `C:\\你的解壓縮路徑\\` 替換成你實際的解壓縮位置，路徑中的 `\` 需要寫成 `\\`
-
-**完整的 mcp.json 範例**：
-```json
-{
-  "mcpServers": {
-    "Local-Library": {
-      "command": "C:\\Tools\\PDF_RAG_TOOL\\start_mcp.bat",
-      "args": []
-    }
-  }
-}
-```
-
-### 步驟 3：重新載入
-
-設定完成後，重新啟動 Cursor 或重新載入 MCP 設定。
+> ⚠️ **注意**：請將路徑替換成你實際的位置，路徑中的 `\` 需要寫成 `\\`
 
 ---
 
 ## 📖 使用範例
 
 ### 🔍 查詢知識庫
-
-在 Cursor 聊天視窗中，使用以下關鍵字讓 AI 調用知識庫：
 
 ```
 請從知識庫中查詢 XXX 的相關資訊
@@ -72,33 +116,22 @@ C:\Tools\PDF_RAG_TOOL\
 根據知識庫，XXX 是什麼意思？
 ```
 
-```
-幫我在本地文件中搜尋關於 YYY 的內容
-```
-
-> 💡 **提示**：關鍵字如「知識庫」、「本地文件」、「搜尋文件」等可以幫助 AI 理解需要調用 MCP 工具
-
----
-
 ### 📁 加入文件到知識庫
 
-**加入單個文件**：
 ```
 請把 C:\Documents\report.pdf 加入知識庫
 ```
 
-**批次加入整個資料夾**：
-```
-請把 C:\MyDocuments\ 資料夾內的所有文件加入知識庫
-```
-
 **支援的文件格式**：
+
 - 📕 PDF (`.pdf`)
 - 📘 Word (`.docx`)
 - 📙 PowerPoint (`.pptx`)
 - 📗 Excel (`.xlsx`, `.xls`)
-
----
+- 📄 Markdown (`.md`)
+- 📝 純文字 (`.txt`, `.log`)
+- 💻 程式碼 (`.py`, `.js`, `.ts`, `.html`, `.css`, `.xml`)
+- ⚙️ 設定檔 (`.json`, `.yaml`, `.yml`, `.ini`)
 
 ### 📋 列出已索引的文件
 
@@ -106,84 +139,133 @@ C:\Tools\PDF_RAG_TOOL\
 列出知識庫中已經索引的所有文件
 ```
 
+---
+
+## 📂 資料夾結構
+
 ```
-知識庫目前有哪些文件？
+pdf_rag_mcp/
+├── server/                    # Server 端
+│   ├── rag_server.py          # FastAPI Server
+│   ├── requirements.txt       # Server 依賴
+│   └── start_server.sh        # 啟動腳本
+│
+├── client/                    # Client 端
+│   ├── mcp_client.py          # MCP Client
+│   ├── requirements.txt       # Client 依賴
+│   └── start_mcp.bat          # Windows 啟動腳本
+│
+├── faiss_index/               # 向量索引 (Server 端)
+│   ├── index.faiss
+│   └── index.pkl
+│
+├── models/                    # AI 模型快取 (Server 端)
+└── README.md
 ```
 
 ---
 
-## 🔧 進階操作
+## 🛠️ Server API
 
-### 重置索引（重建知識庫）
+| Endpoint     | Method | Description       |
+| ------------ | ------ | ----------------- |
+| `/health`    | GET    | 健康檢查          |
+| `/documents` | POST   | 新增文件 (Base64) |
+| `/documents` | GET    | 列出已索引文件    |
+| `/query`     | POST   | 搜尋知識庫        |
 
-如果需要清空知識庫重新建立索引：
+### API 範例
 
-1. 關閉 Cursor 或停止 MCP 伺服器
-2. 刪除 `faiss_index` 資料夾
-3. 重新啟動 Cursor
+**新增文件**：
 
+```bash
+curl -X POST http://localhost:8000/documents \
+  -H "Content-Type: application/json" \
+  -d '{"filename": "test.txt", "content_base64": "SGVsbG8gV29ybGQ="}'
 ```
-📁 PDF_RAG_TOOL\
-├── server.py
-├── start_mcp.bat
-├── python_env\
-└── faiss_index\      ← 刪除這個資料夾即可重置索引
-    ├── index.faiss
-    └── index.pkl
-```
 
-> 刪除後，下次加入文件時會自動建立新的空白索引
+**查詢知識庫**：
 
----
-
-## 📂 資料夾結構說明
-
-> Note: Documents 只是預設文件，未來使用不需要把檔案複製過來，只要直接給 cursor agent 絕對路徑即可
-
-```
-PDF_RAG_TOOL\
-├── 📄 server.py          # MCP 伺服器主程式
-├── 📄 start_mcp.bat      # 啟動腳本（Cursor 會呼叫這個）
-├── 📄 requirements.txt   # Python 依賴套件清單
-├── 📁 python_env\        # 內嵌式 Python 環境（已預裝所有套件）
-├── 📁 faiss_index\       # 向量索引存放位置
-│   ├── index.faiss       # FAISS 索引檔案
-│   └── index.pkl         # 文件 metadata
-└── 📁 Documents\         # (可選) 範例文件資料夾
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "hello"}'
 ```
 
 ---
 
 ## 🛠️ MCP 工具清單
 
-| 工具名稱 | 功能說明 |
-|---------|---------|
-| `query_library` | 從知識庫搜尋相關資訊 |
-| `add_document_to_library` | 將單個文件加入知識庫 |
-| `add_folder_to_library` | 批次將資料夾內所有文件加入知識庫 |
-| `list_indexed_files` | 列出已索引的文件及統計資訊 |
-| `add_pdf_to_library` | (舊版相容) 等同於 add_document_to_library |
+| 工具名稱                  | 功能說明                   |
+| ------------------------- | -------------------------- |
+| `query_library`           | 從知識庫搜尋相關資訊       |
+| `add_document_to_library` | 將單個文件加入知識庫       |
+| `list_indexed_files`      | 列出已索引的文件及統計資訊 |
+
+---
+
+## ⚙️ 環境變數設定
+
+### Client 端
+
+| 變數                  | 預設值      | 說明               |
+| --------------------- | ----------- | ------------------ |
+| `RAG_SERVER_HOST`     | `localhost` | Server IP 或主機名 |
+| `RAG_SERVER_PORT`     | `8000`      | Server Port        |
+| `RAG_REQUEST_TIMEOUT` | `120`       | 請求超時（秒）     |
 
 ---
 
 ## ❓ 常見問題
 
-### Q: 第一次使用很慢怎麼辦？
-**A**: 第一次執行時會下載 AI Embedding 模型（約 90MB），這是正常現象。後續使用會快很多。
+### Q: Client 顯示 "Cannot connect to RAG server"？
 
-### Q: 如何確認 MCP 是否正常運作？
-**A**: 在 Cursor 聊天視窗問：「知識庫目前有哪些文件？」如果回傳清單或「知識庫是空的」表示運作正常。
+**A**: 確認：
 
-### Q: 可以搜尋中文文件嗎？
-**A**: 可以！但目前使用的 Embedding 模型（all-MiniLM-L6-v2）對英文效果較佳。中文文件可以索引和搜尋，但語意相關性可能不如英文精準。
+1. Server 是否已啟動
+2. `start_mcp.bat` 中的 IP/Port 設定是否正確
+3. 防火牆是否允許該 Port
 
-### Q: 索引檔案太大怎麼辦？
-**A**: `faiss_index` 資料夾的大小會隨著索引的文件數量增加。如果要節省空間，可以刪除不需要的文件後重建索引。
+### Q: 第一次使用 Server 很慢？
+
+**A**: 第一次啟動會下載 AI 模型（約 1GB），後續啟動會快很多。
+
+### Q: 文件太大無法上傳？
+
+**A**: 目前限制單檔 20MB。如需調整，修改 `server/rag_server.py` 中的 `MAX_FILE_SIZE_MB`。
+
+### Q: 如何重置知識庫？
+
+**A**: 停止 Server，刪除 `faiss_index/` 資料夾，重新啟動即可。
 
 ### Q: 已索引的文件更新後需要重新加入嗎？
-**A**: 是的。目前系統會根據檔名檢測重複，如果檔案內容更新但檔名相同，需要先刪除 `faiss_index` 資料夾後重新加入。
 
+**A**: 是的。目前系統會根據檔名檢測重複，如果檔案內容更新但檔名相同，需要先刪除索引後重新加入。
 
-### Q: MCP Tools 顯示 load error 或是持續 loading tool 怎麼辦?
-**A:** 先 disable 再 enable 應該能解決問題。
+---
 
+## 🔧 進階設定
+
+### 多 Worker 部署
+
+對於更高的並發需求，可使用多 Worker：
+
+```bash
+uvicorn server.rag_server:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+### Docker 部署
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY server/ ./server/
+COPY faiss_index/ ./faiss_index/
+COPY models/ ./models/
+
+RUN pip install -r server/requirements.txt
+
+EXPOSE 8000
+CMD ["uvicorn", "server.rag_server:app", "--host", "0.0.0.0", "--port", "8000"]
+```

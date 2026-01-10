@@ -1,0 +1,7 @@
+# MCP Client Dependencies
+
+# MCP Framework
+fastmcp>=0.1.0
+
+# HTTP Client
+requests>=2.31.0
