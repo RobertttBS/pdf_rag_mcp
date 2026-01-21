@@ -3,8 +3,9 @@ REM Start MCP Client for Cursor
 REM Configure RAG server connection below
 
 REM === Configuration ===
-set RAG_SERVER_HOST=localhost
-set RAG_SERVER_PORT=8000
+REM Server list format: host1:port1,host2:port2,...
+REM Client will try each server in order until one responds
+set RAG_SERVER_LIST=10.8.108.72:9527,10.8.108.23:9527,localhost:9527
 set RAG_REQUEST_TIMEOUT=120
 
 REM === Start MCP ===

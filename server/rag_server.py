@@ -15,6 +15,10 @@ import sys
 import base64
 import warnings
 import shutil
+import signal
+import asyncio
+import socket
+from contextlib import asynccontextmanager
 
 # ---------------------------------------------------------
 # Set model cache directory to ./models/ (relative to script location)
@@ -302,13 +306,102 @@ def process_and_index_document(file_path: str, original_filename: str):
         traceback.print_exc()
 
 # ---------------------------------------------------------
+# Port checking utilities
+# ---------------------------------------------------------
+
+def is_port_in_use(port: int, host: str = "0.0.0.0") -> bool:
+    """Check if a port is in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
+
+def kill_process_on_port(port: int) -> bool:
+    """Kill any process using the specified port (Windows only)."""
+    import subprocess
+    try:
+        # Find PID using netstat
+        result = subprocess.run(
+            f'netstat -ano | findstr ":{port} " | findstr "LISTENING"',
+            shell=True, capture_output=True, text=True
+        )
+        if result.stdout:
+            for line in result.stdout.strip().split('\n'):
+                parts = line.split()
+                if len(parts) >= 5:
+                    pid = parts[-1]
+                    print(f"[System] Killing existing process on port {port} (PID: {pid})...", file=sys.stderr)
+                    subprocess.run(f'taskkill /PID {pid} /F', shell=True, capture_output=True)
+                    import time
+                    time.sleep(1)
+                    return True
+    except Exception as e:
+        print(f"[WARNING] Failed to kill process on port {port}: {e}", file=sys.stderr)
+    return False
+
+# ---------------------------------------------------------
+# Shutdown flag for graceful shutdown
+# ---------------------------------------------------------
+
+_shutdown_event = asyncio.Event() if hasattr(asyncio, 'Event') else None
+
+def cleanup_resources():
+    """Release resources on shutdown."""
+    global _embedding_function, _db_cache
+    
+    print("[System] Cleaning up resources...", file=sys.stderr)
+    
+    # Save database if loaded
+    if _db_cache is not None:
+        try:
+            _db_cache.save_local(DB_DIR)
+            print("[System] Database saved.", file=sys.stderr)
+        except Exception as e:
+            print(f"[WARNING] Failed to save database: {e}", file=sys.stderr)
+    
+    # Clear references
+    _db_cache = None
+    _embedding_function = None
+    
+    print("[System] Cleanup complete.", file=sys.stderr)
+
+# ---------------------------------------------------------
+# Lifespan handler (modern FastAPI pattern)
+# ---------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle."""
+    # Startup
+    print("[System] Initializing RAG Server...", file=sys.stderr)
+    
+    print("[System] 1/2 Loading Embedding Model...", file=sys.stderr)
+    get_embedding_function()
+    
+    print("[System] 2/2 Pre-loading Database...", file=sys.stderr)
+    get_db()
+    
+    print("[System] All systems ready.", file=sys.stderr)
+    
+    yield  # Server is running
+    
+    # Shutdown
+    print("[System] Shutting down gracefully...", file=sys.stderr)
+    cleanup_resources()
+    print("[System] Server stopped.", file=sys.stderr)
+
+# ---------------------------------------------------------
 # FastAPI App
 # ---------------------------------------------------------
 
 app = FastAPI(
     title="RAG Server",
     description="REST API for PDF Knowledge Base",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # ---------------------------------------------------------
@@ -469,26 +562,63 @@ def query_knowledge_base(request: QueryRequest):
     )
 
 # ---------------------------------------------------------
-# Startup Event
-# ---------------------------------------------------------
-
-@app.on_event("startup")
-async def startup_event():
-    """Pre-load models and index on startup."""
-    print("[System] Initializing RAG Server...", file=sys.stderr)
-    
-    print("[System] 1/2 Loading Embedding Model...", file=sys.stderr)
-    get_embedding_function()
-    
-    print("[System] 2/2 Pre-loading Database...", file=sys.stderr)
-    get_db()
-    
-    print("[System] All systems ready.", file=sys.stderr)
-
-# ---------------------------------------------------------
 # Run with: uvicorn rag_server:app --host 0.0.0.0 --port 8000
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="RAG Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    args = parser.parse_args()
+    
+    # Check port availability BEFORE loading heavy models
+    print(f"[System] Checking port {args.port} availability...", file=sys.stderr)
+    if is_port_in_use(args.port, args.host):
+        print(f"[WARNING] Port {args.port} is in use, attempting to free it...", file=sys.stderr)
+        if kill_process_on_port(args.port):
+            # Wait a bit for port to be released
+            import time
+            time.sleep(3)
+            if is_port_in_use(args.port, args.host):
+                print(f"[ERROR] Port {args.port} is still in use. Please free it manually.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(f"[ERROR] Port {args.port} is in use and cannot be freed.", file=sys.stderr)
+            sys.exit(1)
+    print(f"[System] Port {args.port} is available.", file=sys.stderr)
+    
+    # Configure uvicorn with proper signal handling and graceful shutdown
+    config = uvicorn.Config(
+        app=app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        timeout_graceful_shutdown=5,  # Allow 5 seconds for graceful shutdown
+    )
+    server = uvicorn.Server(config)
+    
+    # Override uvicorn's default signal handlers for Windows compatibility
+    # This ensures Ctrl+C properly triggers shutdown
+    original_signal_handler = signal.getsignal(signal.SIGINT)
+    
+    def handle_exit(signum, frame):
+        print("\n[System] Received shutdown signal (Ctrl+C)...", file=sys.stderr)
+        server.should_exit = True
+        # Restore original handler to allow force quit on second Ctrl+C
+        signal.signal(signal.SIGINT, original_signal_handler)
+    
+    signal.signal(signal.SIGINT, handle_exit)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, handle_exit)
+    
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\n[System] Interrupted by user.", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] Server error: {e}", file=sys.stderr)
+    finally:
+        print("[System] Server exited.", file=sys.stderr)

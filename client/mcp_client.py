@@ -5,8 +5,9 @@ This MCP server exposes the same tools as the original server.py,
 but forwards all requests to a remote RAG server via HTTP.
 
 Configuration (environment variables):
-- RAG_SERVER_HOST: Server hostname (default: localhost)
-- RAG_SERVER_PORT: Server port (default: 8000)
+- RAG_SERVER_LIST: Comma-separated list of servers (host:port format)
+                   Example: "10.8.108.72:9527,192.168.1.100:9527,localhost:8000"
+                   Client will try each server in order until one responds.
 - RAG_REQUEST_TIMEOUT: Request timeout in seconds (default: 120)
 """
 
@@ -16,15 +17,37 @@ import sys
 import base64
 import requests
 
+# Force UTF-8 encoding for Windows (Fixes \U000... garbage text)
+if sys.platform == "win32":
+    # Reconfigure standard out and error to handle emojis
+    if sys.stdout: sys.stdout.reconfigure(encoding='utf-8')
+    if sys.stderr: sys.stderr.reconfigure(encoding='utf-8')
+
 # ---------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------
 
-RAG_SERVER_HOST = os.environ.get("RAG_SERVER_HOST", "localhost")
-RAG_SERVER_PORT = os.environ.get("RAG_SERVER_PORT", "8000")
+RAG_SERVER_LIST_STR = os.environ.get("RAG_SERVER_LIST", "localhost:8000")
 RAG_REQUEST_TIMEOUT = int(os.environ.get("RAG_REQUEST_TIMEOUT", "120"))
 
-BASE_URL = f"http://{RAG_SERVER_HOST}:{RAG_SERVER_PORT}"
+# Parse server list
+SERVER_LIST = []
+for server in RAG_SERVER_LIST_STR.split(","):
+    server = server.strip()
+    if not server:
+        continue
+    if ":" in server:
+        host, port = server.rsplit(":", 1)
+        SERVER_LIST.append({"host": host, "port": port, "url": f"http://{host}:{port}"})
+    else:
+        # Default port 8000 if not specified
+        SERVER_LIST.append({"host": server, "port": "8000", "url": f"http://{server}:8000"})
+
+if not SERVER_LIST:
+    SERVER_LIST = [{"host": "localhost", "port": "8000", "url": "http://localhost:8000"}]
+
+# Current active server index (sticky: remember last working server)
+_current_server_index = 0
 
 # File size limit (must match server)
 MAX_FILE_SIZE_MB = 20
@@ -45,7 +68,7 @@ SUPPORTED_EXTENSIONS = {
 # MCP Server
 # ---------------------------------------------------------
 
-mcp = FastMCP("My Local Library")
+mcp = FastMCP("My Local Library", log_level="info")
 
 # ---------------------------------------------------------
 # Helper Functions
@@ -57,49 +80,73 @@ def get_file_extension(file_path: str) -> str:
 
 def make_request(method: str, endpoint: str, **kwargs) -> dict:
     """
-    Make HTTP request to RAG server with error handling.
+    Make HTTP request to RAG server with failover support.
+    
+    Tries each server in SERVER_LIST in order, starting from the last
+    successful server (sticky). If a server fails with ConnectionError,
+    automatically tries the next server.
     
     Returns:
         dict with 'success' (bool) and either 'data' or 'error'
     """
-    url = f"{BASE_URL}{endpoint}"
+    global _current_server_index
     
-    try:
-        if method == "GET":
-            response = requests.get(url, timeout=RAG_REQUEST_TIMEOUT, **kwargs)
-        elif method == "POST":
-            response = requests.post(url, timeout=RAG_REQUEST_TIMEOUT, **kwargs)
-        else:
-            return {"success": False, "error": f"Unsupported method: {method}"}
+    connection_errors = []
+    num_servers = len(SERVER_LIST)
+    
+    # Try each server, starting from current index
+    for attempt in range(num_servers):
+        idx = (_current_server_index + attempt) % num_servers
+        server = SERVER_LIST[idx]
+        url = f"{server['url']}{endpoint}"
         
-        # Check for HTTP errors
-        if response.status_code >= 400:
-            try:
-                error_detail = response.json().get("detail", response.text)
-            except Exception:
-                error_detail = response.text
+        try:
+            if method == "GET":
+                response = requests.get(url, timeout=RAG_REQUEST_TIMEOUT, **kwargs)
+            elif method == "POST":
+                response = requests.post(url, timeout=RAG_REQUEST_TIMEOUT, **kwargs)
+            else:
+                return {"success": False, "error": f"Unsupported method: {method}"}
+            
+            # Check for HTTP errors
+            if response.status_code >= 400:
+                try:
+                    error_detail = response.json().get("detail", response.text)
+                except Exception:
+                    error_detail = response.text
+                return {
+                    "success": False,
+                    "error": f"Server error ({response.status_code}): {error_detail}"
+                }
+            
+            # Success! Update sticky server index
+            if idx != _current_server_index:
+                print(f"[Failover] Switched to server: {server['host']}:{server['port']}", file=sys.stderr)
+                _current_server_index = idx
+            
+            return {"success": True, "data": response.json()}
+        
+        except requests.exceptions.ConnectionError:
+            connection_errors.append(f"{server['host']}:{server['port']}")
+            # Try next server
+            continue
+        
+        except requests.exceptions.Timeout:
             return {
                 "success": False,
-                "error": f"Server error ({response.status_code}): {error_detail}"
+                "error": f"Error: Server {server['host']}:{server['port']} timed out after {RAG_REQUEST_TIMEOUT}s"
             }
-        
-        return {"success": True, "data": response.json()}
+        except requests.exceptions.RequestException as e:
+            return {
+                "success": False,
+                "error": f"Error: Request to {server['host']}:{server['port']} failed - {str(e)}"
+            }
     
-    except requests.exceptions.ConnectionError:
-        return {
-            "success": False,
-            "error": f"Error: Cannot connect to RAG server at {RAG_SERVER_HOST}:{RAG_SERVER_PORT}. Is the server running?"
-        }
-    except requests.exceptions.Timeout:
-        return {
-            "success": False,
-            "error": f"Error: Server request timed out after {RAG_REQUEST_TIMEOUT} seconds"
-        }
-    except requests.exceptions.RequestException as e:
-        return {
-            "success": False,
-            "error": f"Error: Request failed - {str(e)}"
-        }
+    # All servers failed with connection errors
+    return {
+        "success": False,
+        "error": f"Error: All servers unreachable. Tried: {', '.join(connection_errors)}"
+    }
 
 # ---------------------------------------------------------
 # MCP Tools
@@ -146,7 +193,7 @@ def add_document_to_library(file_path: str) -> str:
     
     if result["success"]:
         data = result["data"]
-        return f"[OK] Added '{filename}' with {data.get('chunks_added', '?')} chunks to knowledge base."
+        return f"[OK] Added '{filename}' with {data.get('chunks_added', '?')} chunks to knowledge base. Server is indexing, please wait..."
     else:
         return result["error"]
 
@@ -207,6 +254,28 @@ def query_library(query: str) -> str:
 # Main
 # ---------------------------------------------------------
 
+def find_available_server() -> bool:
+    """
+    Try to find an available server from SERVER_LIST.
+    Updates _current_server_index to point to the first working server.
+    
+    Returns:
+        True if a working server is found, False otherwise.
+    """
+    global _current_server_index
+    
+    for idx, server in enumerate(SERVER_LIST):
+        url = f"{server['url']}/health"
+        try:
+            response = requests.get(url, timeout=5)  # Short timeout for health check
+            if response.status_code == 200:
+                _current_server_index = idx
+                return True
+        except requests.exceptions.RequestException:
+            continue
+    return False
+
+
 if __name__ == "__main__":
     import traceback
     
@@ -214,16 +283,18 @@ if __name__ == "__main__":
     
     try:
         print(f"[System] Starting MCP Client...", file=sys.stderr)
-        print(f"[System] RAG Server: {BASE_URL}", file=sys.stderr)
+        print(f"[System] Server list ({len(SERVER_LIST)} servers):", file=sys.stderr)
+        for i, server in enumerate(SERVER_LIST):
+            print(f"  [{i+1}] {server['host']}:{server['port']}", file=sys.stderr)
         
-        # Check server health
-        print("[System] Checking server connection...", file=sys.stderr)
-        result = make_request("GET", "/health")
-        if result["success"]:
-            print("[OK] Server connection successful", file=sys.stderr)
+        # Check server health - try to find any available server
+        print("[System] Checking server connections...", file=sys.stderr)
+        if find_available_server():
+            active = SERVER_LIST[_current_server_index]
+            print(f"[OK] Connected to: {active['host']}:{active['port']}", file=sys.stderr)
         else:
-            print(f"[WARNING] {result['error']}", file=sys.stderr)
-            print("[WARNING] MCP will start, but requests may fail until server is available", file=sys.stderr)
+            print("[WARNING] No servers available", file=sys.stderr)
+            print("[WARNING] MCP will start, but requests may fail until a server is available", file=sys.stderr)
         
         print("[System] MCP Server ready.", file=sys.stderr)
         mcp.run()
