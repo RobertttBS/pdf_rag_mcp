@@ -1,5 +1,7 @@
 # MCP Client Dependencies
 
+uvicorn
+
 # MCP Framework
 fastmcp>=0.1.0
 

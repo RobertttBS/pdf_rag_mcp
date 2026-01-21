@@ -16,6 +16,26 @@ import os
 import sys
 import base64
 import requests
+import io  # <--- Add this import
+
+# ---------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------
+
+class Silence:
+    """Context manager to swallow stdout/stderr usually caused by library splash screens."""
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        # Redirect to in-memory buffers effectively silencing output
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore original streams
+        sys.stdout = self._original_stdout
+        sys.stderr = self._original_stderr
 
 # Force UTF-8 encoding for Windows (Fixes \U000... garbage text)
 if sys.platform == "win32":
@@ -68,7 +88,9 @@ SUPPORTED_EXTENSIONS = {
 # MCP Server
 # ---------------------------------------------------------
 
-mcp = FastMCP("My Local Library", log_level="info")
+# Initialize silently to prevent "FastMCP 3.0" banner from breaking the JSON pipe
+with Silence():
+    mcp = FastMCP("My Local Library", log_level="info")
 
 # ---------------------------------------------------------
 # Helper Functions
@@ -279,22 +301,21 @@ def find_available_server() -> bool:
 if __name__ == "__main__":
     import traceback
     
-    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_error.log")
+    # [FIX] Detect if we are running as a frozen exe or a script
+    if getattr(sys, 'frozen', False):
+        # If frozen, log next to the .exe file
+        application_path = os.path.dirname(sys.executable)
+    else:
+        # If script, log next to the script
+        application_path = os.path.dirname(os.path.abspath(__file__))
+
+    log_file = os.path.join(application_path, "debug_error.log")
     
     try:
+        # [NOTE] All standard logs must go to stderr to avoid breaking MCP JSON-RPC
         print(f"[System] Starting MCP Client...", file=sys.stderr)
-        print(f"[System] Server list ({len(SERVER_LIST)} servers):", file=sys.stderr)
-        for i, server in enumerate(SERVER_LIST):
-            print(f"  [{i+1}] {server['host']}:{server['port']}", file=sys.stderr)
         
-        # Check server health - try to find any available server
-        print("[System] Checking server connections...", file=sys.stderr)
-        if find_available_server():
-            active = SERVER_LIST[_current_server_index]
-            print(f"[OK] Connected to: {active['host']}:{active['port']}", file=sys.stderr)
-        else:
-            print("[WARNING] No servers available", file=sys.stderr)
-            print("[WARNING] MCP will start, but requests may fail until a server is available", file=sys.stderr)
+        # ... (rest of your startup logic) ...
         
         print("[System] MCP Server ready.", file=sys.stderr)
         mcp.run()
