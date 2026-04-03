@@ -19,6 +19,10 @@ from typing import Optional
 MAX_FILE_SIZE_MB = 20
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
+# FAISS L2 distance: lower = more similar. Results above this threshold are
+# likely irrelevant and should be flagged to the caller.
+SCORE_WARN_THRESHOLD = 1.5
+
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".pptx", ".xlsx", ".xls",
     ".md", ".txt", ".log", ".bat", ".sh", ".ps1",
@@ -29,7 +33,15 @@ SUPPORTED_EXTENSIONS = {
 
 def get_server() -> str:
     raw = os.environ.get("RAG_SERVER_LIST", "localhost:8000")
-    return raw.split(",")[0].strip()
+    server = raw.split(",")[0].strip()
+    # Normalize: strip any http(s):// prefix so we always prepend http://
+    if server.startswith("http://"):
+        server = server[len("http://"):]
+    elif server.startswith("https://"):
+        # We only support plain HTTP to the local server
+        print("Warning: HTTPS is not supported; using HTTP.", file=sys.stderr)
+        server = server[len("https://"):]
+    return server
 
 
 def request(method: str, path: str, body: Optional[dict] = None, timeout: int = 120) -> dict:
@@ -54,6 +66,15 @@ def request(method: str, path: str, body: Optional[dict] = None, timeout: int = 
         sys.exit(1)
 
 
+def get_indexed_filenames() -> set:
+    """Return the set of filenames already in the knowledge base."""
+    try:
+        data = request("GET", "/documents", timeout=10)
+        return {f["filename"] for f in data.get("files", [])}
+    except SystemExit:
+        return set()
+
+
 def cmd_add(file_path: str) -> None:
     file_path = file_path.strip().strip('"').strip("'")
 
@@ -72,12 +93,18 @@ def cmd_add(file_path: str) -> None:
         print(f"Error: File exceeds {MAX_FILE_SIZE_MB}MB limit ({size / 1024 / 1024:.1f}MB)")
         sys.exit(1)
 
+    filename = os.path.basename(file_path)
+    already_indexed = get_indexed_filenames()
+    if filename in already_indexed:
+        print(f"[SKIP] '{filename}' is already in the knowledge base. Use '/library list' to verify.")
+        return
+
     with open(file_path, "rb") as f:
         content_b64 = base64.b64encode(f.read()).decode()
 
-    filename = os.path.basename(file_path)
     request("POST", "/documents", {"filename": filename, "content_base64": content_b64})
-    print(f"[OK] '{filename}' queued for indexing. Processing runs in background — use '/library list' to confirm when done.")
+    print(f"[OK] '{filename}' queued for indexing.")
+    print("Indexing runs in the background. Wait a moment, then run '/library list' to confirm it appears before querying.")
 
 
 def cmd_list() -> None:
@@ -110,12 +137,19 @@ def cmd_query(query: str) -> None:
         print("No relevant results found in the knowledge base.")
         return
 
+    all_low_relevance = all(r.get("score", 0) > SCORE_WARN_THRESHOLD for r in results)
+    if all_low_relevance:
+        print(f"[WARNING] All results have low relevance scores (>{SCORE_WARN_THRESHOLD}). "
+              "The knowledge base may not contain information on this topic.\n")
+
     print(f"Search results for '{query}':\n")
     for item in results:
         source = item.get("source", "Unknown")
         page = item.get("page", "N/A")
         content = item.get("content", "")
-        print(f"--- {source} (p.{page}) ---")
+        score = item.get("score")
+        score_str = f"  score={score:.3f}" if score is not None else ""
+        print(f"--- {source} (p.{page}){score_str} ---")
         print(content)
         print()
 
@@ -124,7 +158,12 @@ def main() -> None:
     # When invoked from SKILL.md, all arguments arrive as one quoted string (argv[1]).
     # shlex.split() restores proper tokenisation, handling spaces and quoted paths.
     if len(sys.argv) == 2:
-        args = shlex.split(sys.argv[1])
+        try:
+            args = shlex.split(sys.argv[1])
+        except ValueError:
+            # Unmatched quotes (e.g. apostrophes in natural language). Treat the
+            # whole string as a raw query rather than crashing.
+            args = sys.argv[1].split()
     else:
         args = sys.argv[1:]
 

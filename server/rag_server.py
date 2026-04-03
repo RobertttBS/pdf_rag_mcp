@@ -424,6 +424,7 @@ class QueryResult(BaseModel):
     source: str
     page: str
     content: str
+    score: float = 0.0
 
 class QueryResponse(BaseModel):
     query: str
@@ -547,17 +548,18 @@ def query_knowledge_base(request: QueryRequest):
     if not db:
         raise HTTPException(status_code=404, detail="Knowledge base is empty. Please add documents first.")
     
-    results = db.similarity_search(request.query, k=4)
-    
+    results = db.similarity_search_with_score(request.query, k=4)
+
     return QueryResponse(
         query=request.query,
         results=[
             QueryResult(
                 source=doc.metadata.get('source', 'Unknown'),
                 page=str(doc.metadata.get('page', 'N/A')),
-                content=doc.page_content
+                content=doc.page_content,
+                score=float(score),
             )
-            for doc in results
+            for doc, score in results
         ]
     )
 
