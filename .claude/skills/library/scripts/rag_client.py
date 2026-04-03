@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""
+RAG Library Client
+Usage:
+  rag_client.py add <file-path>   — index a document
+  rag_client.py list              — list indexed files and stats
+  rag_client.py query <term...>   — semantic search
+"""
+
+import base64
+import json
+import os
+import shlex
+import sys
+import urllib.error
+import urllib.request
+from typing import Optional
+
+MAX_FILE_SIZE_MB = 20
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+SUPPORTED_EXTENSIONS = {
+    ".pdf", ".docx", ".pptx", ".xlsx", ".xls",
+    ".md", ".txt", ".log", ".bat", ".sh", ".ps1",
+    ".json", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".csv",
+    ".py", ".js", ".ts", ".html", ".css", ".xml",
+}
+
+
+def get_server() -> str:
+    raw = os.environ.get("RAG_SERVER_LIST", "localhost:8000")
+    return raw.split(",")[0].strip()
+
+
+def request(method: str, path: str, body: Optional[dict] = None, timeout: int = 120) -> dict:
+    server = get_server()
+    url = f"http://{server}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode()
+        try:
+            detail = json.loads(detail).get("detail", detail)
+        except Exception:
+            pass
+        print(f"Server error {e.code}: {detail}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Cannot reach server at {server}: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_add(file_path: str) -> None:
+    file_path = file_path.strip().strip('"').strip("'")
+
+    if not os.path.exists(file_path):
+        print(f"Error: File not found: {file_path}")
+        sys.exit(1)
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        print(f"Error: Unsupported format '{ext}'")
+        print(f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+        sys.exit(1)
+
+    size = os.path.getsize(file_path)
+    if size > MAX_FILE_SIZE_BYTES:
+        print(f"Error: File exceeds {MAX_FILE_SIZE_MB}MB limit ({size / 1024 / 1024:.1f}MB)")
+        sys.exit(1)
+
+    with open(file_path, "rb") as f:
+        content_b64 = base64.b64encode(f.read()).decode()
+
+    filename = os.path.basename(file_path)
+    request("POST", "/documents", {"filename": filename, "content_base64": content_b64})
+    print(f"[OK] '{filename}' queued for indexing. Processing runs in background — use '/library list' to confirm when done.")
+
+
+def cmd_list() -> None:
+    data = request("GET", "/documents", timeout=30)
+
+    if data.get("total_files", 0) == 0:
+        print("Knowledge base is empty. Use '/library add <file>' to index documents.")
+        return
+
+    print("Knowledge Base Statistics")
+    print("=" * 40)
+    print(f"Indexed files : {data['total_files']}")
+    print(f"Total chunks  : {data['total_chunks']}")
+    print("=" * 40)
+    for i, f in enumerate(data["files"], 1):
+        page_info = f", {f['pages']} pages" if f.get("pages") else ""
+        print(f"{i}. {f['filename']}")
+        print(f"   {f['chunks']} chunks{page_info}")
+
+
+def cmd_query(query: str) -> None:
+    if not query.strip():
+        print("Error: Please provide a search query.")
+        sys.exit(1)
+
+    data = request("POST", "/query", {"query": query})
+    results = data.get("results", [])
+
+    if not results:
+        print("No relevant results found in the knowledge base.")
+        return
+
+    print(f"Search results for '{query}':\n")
+    for item in results:
+        source = item.get("source", "Unknown")
+        page = item.get("page", "N/A")
+        content = item.get("content", "")
+        print(f"--- {source} (p.{page}) ---")
+        print(content)
+        print()
+
+
+def main() -> None:
+    # When invoked from SKILL.md, all arguments arrive as one quoted string (argv[1]).
+    # shlex.split() restores proper tokenisation, handling spaces and quoted paths.
+    if len(sys.argv) == 2:
+        args = shlex.split(sys.argv[1])
+    else:
+        args = sys.argv[1:]
+
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    action = args[0].lower()
+
+    if action == "add":
+        if len(args) < 2:
+            print("Usage: library add <file-path>")
+            sys.exit(1)
+        cmd_add(" ".join(args[1:]))
+    elif action == "list":
+        cmd_list()
+    elif action == "query":
+        if len(args) < 2:
+            print("Usage: library query <search term>")
+            sys.exit(1)
+        cmd_query(" ".join(args[1:]))
+    else:
+        print(f"Unknown action '{action}'. Use: add | list | query")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
