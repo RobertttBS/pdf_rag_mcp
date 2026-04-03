@@ -46,17 +46,9 @@ def _normalize_host(server: str) -> str:
 
 def get_servers() -> list:
     """
-    Return ordered list of server host:port strings.
-
-    Priority:
-      1. RAG_SERVER_LIST env variable (comma-separated)
-      2. rag_config.json "servers" list
-      3. Fallback: ["localhost:8000"]
+    Return ordered list of server host:port strings from rag_config.json.
+    Falls back to ["localhost:8000"] if the config is missing or invalid.
     """
-    env_val = os.environ.get("RAG_SERVER_LIST", "").strip()
-    if env_val:
-        return [_normalize_host(s.strip()) for s in env_val.split(",") if s.strip()]
-
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:

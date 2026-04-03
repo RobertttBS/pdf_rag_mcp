@@ -46,17 +46,8 @@ returned passages as authoritative.
 
 ## Configuration
 
-Server addresses are resolved in this priority order:
+Edit `skills/library/rag_config.json` to configure server addresses:
 
-1. **`RAG_SERVER_LIST` env variable** (comma-separated `host:port` list) — overrides everything else.
-2. **`rag_config.json`** — edit `skills/library/rag_config.json` to set a persistent IP list.
-3. **Fallback** — `localhost:8000`.
-
-When multiple servers are configured, the client tries them in order and automatically
-falls back to the next one if a connection cannot be established.
-HTTP errors (4xx/5xx) are not retried — they mean the server is reachable but rejected the request.
-
-`rag_config.json` example:
 ```json
 {
   "servers": [
@@ -65,3 +56,8 @@ HTTP errors (4xx/5xx) are not retried — they mean the server is reachable but 
   ]
 }
 ```
+
+Servers are tried in order. If the first is unreachable, the client automatically
+falls back to the next. HTTP errors (4xx/5xx) are not retried — they mean the
+server is reachable but rejected the request. Falls back to `localhost:8000` if
+the config file is missing.
