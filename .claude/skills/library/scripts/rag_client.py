@@ -23,6 +23,9 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 # likely irrelevant and should be flagged to the caller.
 SCORE_WARN_THRESHOLD = 1.5
 
+# Config file is one level up from this script (i.e. skills/library/rag_config.json)
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rag_config.json")
+
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".pptx", ".xlsx", ".xls",
     ".md", ".txt", ".log", ".bat", ".sh", ".ps1",
@@ -31,39 +34,71 @@ SUPPORTED_EXTENSIONS = {
 }
 
 
-def get_server() -> str:
-    raw = os.environ.get("RAG_SERVER_LIST", "localhost:8000")
-    server = raw.split(",")[0].strip()
-    # Normalize: strip any http(s):// prefix so we always prepend http://
+def _normalize_host(server: str) -> str:
+    """Strip http(s):// prefix so we always prepend http:// ourselves."""
     if server.startswith("http://"):
-        server = server[len("http://"):]
-    elif server.startswith("https://"):
-        # We only support plain HTTP to the local server
+        return server[len("http://"):]
+    if server.startswith("https://"):
         print("Warning: HTTPS is not supported; using HTTP.", file=sys.stderr)
-        server = server[len("https://"):]
+        return server[len("https://"):]
     return server
 
 
+def get_servers() -> list:
+    """
+    Return ordered list of server host:port strings.
+
+    Priority:
+      1. RAG_SERVER_LIST env variable (comma-separated)
+      2. rag_config.json "servers" list
+      3. Fallback: ["localhost:8000"]
+    """
+    env_val = os.environ.get("RAG_SERVER_LIST", "").strip()
+    if env_val:
+        return [_normalize_host(s.strip()) for s in env_val.split(",") if s.strip()]
+
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            servers = [_normalize_host(s.strip()) for s in cfg.get("servers", []) if s.strip()]
+            if servers:
+                return servers
+        except Exception as e:
+            print(f"Warning: Could not read {CONFIG_PATH}: {e}", file=sys.stderr)
+
+    return ["localhost:8000"]
+
+
 def request(method: str, path: str, body: Optional[dict] = None, timeout: int = 120) -> dict:
-    server = get_server()
-    url = f"http://{server}{path}"
+    servers = get_servers()
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode()
+
+    last_error: str = ""
+    for i, server in enumerate(servers):
+        url = f"http://{server}{path}"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            detail = json.loads(detail).get("detail", detail)
-        except Exception:
-            pass
-        print(f"Server error {e.code}: {detail}", file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as e:
-        print(f"Cannot reach server at {server}: {e.reason}", file=sys.stderr)
-        sys.exit(1)
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            # HTTP errors (4xx/5xx) mean the server is reachable — don't fall back.
+            detail = e.read().decode()
+            try:
+                detail = json.loads(detail).get("detail", detail)
+            except Exception:
+                pass
+            print(f"Server error {e.code}: {detail}", file=sys.stderr)
+            sys.exit(1)
+        except urllib.error.URLError as e:
+            last_error = str(e.reason)
+            if i < len(servers) - 1:
+                print(f"Cannot reach {server} ({last_error}), trying next server...", file=sys.stderr)
+            else:
+                print(f"Cannot reach server at {server}: {last_error}", file=sys.stderr)
+
+    sys.exit(1)
 
 
 def cmd_add(file_path: str) -> None:

@@ -46,6 +46,22 @@ returned passages as authoritative.
 
 ## Configuration
 
-Server URL is read from the `RAG_SERVER_LIST` environment variable (default: `localhost:8000`).
-If multiple servers are listed (comma-separated), the first one is used.
-The value should be a bare `host:port` — do not include `http://`.
+Server addresses are resolved in this priority order:
+
+1. **`RAG_SERVER_LIST` env variable** (comma-separated `host:port` list) — overrides everything else.
+2. **`rag_config.json`** — edit `skills/library/rag_config.json` to set a persistent IP list.
+3. **Fallback** — `localhost:8000`.
+
+When multiple servers are configured, the client tries them in order and automatically
+falls back to the next one if a connection cannot be established.
+HTTP errors (4xx/5xx) are not retried — they mean the server is reachable but rejected the request.
+
+`rag_config.json` example:
+```json
+{
+  "servers": [
+    "192.168.1.100:8000",
+    "localhost:8000"
+  ]
+}
+```
