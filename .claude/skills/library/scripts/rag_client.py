@@ -66,15 +66,6 @@ def request(method: str, path: str, body: Optional[dict] = None, timeout: int = 
         sys.exit(1)
 
 
-def get_indexed_filenames() -> set:
-    """Return the set of filenames already in the knowledge base."""
-    try:
-        data = request("GET", "/documents", timeout=10)
-        return {f["filename"] for f in data.get("files", [])}
-    except SystemExit:
-        return set()
-
-
 def cmd_add(file_path: str) -> None:
     file_path = file_path.strip().strip('"').strip("'")
 
@@ -94,11 +85,6 @@ def cmd_add(file_path: str) -> None:
         sys.exit(1)
 
     filename = os.path.basename(file_path)
-    already_indexed = get_indexed_filenames()
-    if filename in already_indexed:
-        print(f"[SKIP] '{filename}' is already in the knowledge base. Use '/library list' to verify.")
-        return
-
     with open(file_path, "rb") as f:
         content_b64 = base64.b64encode(f.read()).decode()
 
