@@ -8,17 +8,36 @@ description: >
 argument-hint: add <file> | list | query <term>
 allowed-tools:
   - Bash(python3 *)
+  - Read
+  - Edit
 ---
 
 # /library — Local Knowledge Base
 
 Arguments: `$ARGUMENTS`
 
-Run the following command and present the output to the user:
+Run the following command and capture its output and exit code:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/rag_client.py" "$ARGUMENTS"
+python3 "${CLAUDE_SKILL_DIR}/scripts/rag_client.py" "$ARGUMENTS"; echo "EXIT_CODE=$?"
 ```
+
+## Handling connection failures
+
+If the output contains `[ALL_SERVERS_UNREACHABLE]`:
+
+1. Parse `CONFIG_PATH=...` and `CURRENT_SERVERS=...` from the output.
+2. Tell the user that none of the configured servers are reachable, and show them the current server list.
+3. Ask the user: **"Please provide a reachable server address (format: host:port or IP:port) to add to the config. Leave blank to keep only localhost:8000."**
+4. Once the user replies:
+   - Read the config file at the path from `CONFIG_PATH=`.
+   - Update the `"servers"` list: put the user-supplied address first, keep `"localhost:8000"` as the last fallback (remove any addresses that were already unreachable, unless the user explicitly wants to keep them).
+   - Save the updated JSON with the Edit tool.
+   - Confirm to the user which servers are now configured.
+   - Retry the original command automatically.
+5. If the user supplies no address, set `"servers": ["localhost:8000"]` and retry.
+
+Present all other output normally.
 
 ## Sub-commands
 

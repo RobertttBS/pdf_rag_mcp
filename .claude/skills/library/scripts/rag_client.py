@@ -90,7 +90,11 @@ def request(method: str, path: str, body: Optional[dict] = None, timeout: int = 
             else:
                 print(f"Cannot reach server at {server}: {last_error}", file=sys.stderr)
 
-    sys.exit(1)
+    # All servers exhausted — emit a structured signal so the skill can guide the user.
+    print(f"[ALL_SERVERS_UNREACHABLE]")
+    print(f"CONFIG_PATH={CONFIG_PATH}")
+    print(f"CURRENT_SERVERS={','.join(servers)}")
+    sys.exit(2)
 
 
 def cmd_add(file_path: str) -> None:
